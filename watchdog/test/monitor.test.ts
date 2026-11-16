@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type Config, type State, formatDuration, newState, nextWake, onHeartbeat, onTick } from "../src/monitor";
-import { handleCommand, parseDuration } from "../src/reports";
+import { fixText, handleCommand, joinChat, leaveChat, parseDuration, recipients } from "../src/reports";
 import { localParts, nextLocal } from "../src/time";
 
 const SEC = 1000;
@@ -362,6 +362,16 @@ describe("reports", () => {
     expect(onHeartbeat(s, "home", { boot: "d", reset: POWERON }, T0 + 11 * MIN + 20 * SEC, cfg)).toEqual(["⚡ home restarted (power-on event). Power was briefly lost."]);
   });
 
+  it("uses the configured default for brief-restart notes until the owner chooses", () => {
+    const quiet: Config = { ...cfg, restartNotes: false };
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a" }, T0, quiet);
+    expect(onHeartbeat(s, "home", { boot: "b", reset: POWERON }, T0 + 20 * SEC, quiet)).toEqual([]);
+    expect(handleCommand(s, "/restarts", T0, quiet)).toContain("are off");
+    expect(handleCommand(s, "/restarts on", T0, quiet)).toBe("Messages about brief restarts are on.");
+    expect(onHeartbeat(s, "home", { boot: "c", reset: POWERON }, T0 + 40 * SEC, quiet)).toHaveLength(1);
+  });
+
   it("explains itself for anything it does not understand", () => {
     const s = newState();
     for (const text of ["/start", "/help", "hello", "/nonsense"]) expect(handleCommand(s, text, T0, cfg)).toContain("/status - is it alive right now");
@@ -373,5 +383,107 @@ describe("reports", () => {
     for (let i = 1; i <= 320; i++) onHeartbeat(s, "home", { boot: String(i), reset: POWERON }, T0 + i * 10 * SEC, cfg);
     expect(s.history).toHaveLength(300);
     expect(s.history[299].to).toBe(T0 + 320 * 10 * SEC);
+  });
+});
+
+describe("help for the person at home", () => {
+  const helped: Config = { ...cfg, timeoutMs: 15 * MIN, help: { hotspotName: "heartbeat-ayse setup", hotspotPassword: "3f9a12c0b7de", contact: "Burak" } };
+
+  it("points to /fix in the alert", () => {
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a" }, T0, helped);
+    expect(tick(s, T0 + 15 * MIN, helped)[0]).toBe(
+      "🔴 home went silent. No heartbeat for 15 min.\nPower or internet at that location is probably down.\nIf the power is on, send /fix for what to check.",
+    );
+  });
+
+  it("says all is well when the device is online", () => {
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a", rssi: -58 }, T0 - 12 * SEC, helped);
+    const text = fixText(s, T0, helped);
+    expect(text).toContain("Everything looks fine right now.\n🟢 home is online, last heartbeat 12 s ago, Wi-Fi signal good (-58 dBm).");
+    expect(text).toContain("An alert only comes after 15 min of silence");
+    expect(text).not.toContain("weak side");
+    onHeartbeat(s, "home", { boot: "a", rssi: -79 }, T0, helped);
+    expect(fixText(s, T0, helped)).toContain("weak side");
+  });
+
+  it("walks through the checks when the device is silent, quoting the hotspot details", () => {
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a" }, T0, helped);
+    tick(s, T0 + 15 * MIN, helped);
+    const text = handleCommand(s, "/fix", T0 + 23 * MIN, helped);
+    expect(text).toContain("home has been silent for 23 min. Check these in order:");
+    expect(text).toContain('join the Wi-Fi network called "heartbeat-ayse setup". Its password is 3f9a12c0b7de.');
+    expect(text).toContain("Still silent? Then ask Burak.");
+    expect(text.match(/^\d\./gm)).toEqual(["1.", "2.", "3.", "4.", "5."]);
+  });
+
+  it("still helps when no details were configured, or the device never connected", () => {
+    const s = newState();
+    const text = fixText(s, T0, cfg);
+    expect(text).toContain("The device has not connected yet. Check these in order:");
+    expect(text).toContain('whose name ends in "setup". Its password is on the card that came with the device.');
+    expect(text).toContain("ask the person who set the device up");
+  });
+});
+
+describe("invitations", () => {
+  const ayse = { chat: "111", name: "Ayşe" };
+  const burak = { chat: "222", name: "Burak" };
+
+  it("sends alerts to the configured chat until someone joins, then to everyone who joined", () => {
+    const s = newState();
+    expect(recipients(s, "999")).toEqual(["999"]);
+    expect(recipients(s, undefined)).toEqual([]);
+    const first = joinChat(s, burak, undefined, T0, cfg);
+    expect(first.reply).toContain("👋 Hello Burak! I watch the small device plugged in at home.");
+    expect(first.reply).toContain("The device has not connected yet.");
+    expect(first.announce).toBeNull();
+    const second = joinChat(s, ayse, undefined, T0, cfg);
+    expect(second.announce).toBe("👤 Ayşe now also receives these alerts.");
+    expect(recipients(s, undefined)).toEqual(["222", "111"]);
+  });
+
+  it("welcomes with the device's current state and the alert time", () => {
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a" }, T0, cfg);
+    const { reply } = joinChat(s, ayse, undefined, T0 + SEC, { ...cfg, timeoutMs: 15 * MIN });
+    expect(reply).toContain("out for more than 15 min");
+    expect(reply).toContain("🟢 home is online.");
+    expect(reply).toContain("/fix - what to check if something seems wrong");
+  });
+
+  it("does not add the same person twice", () => {
+    const s = newState();
+    joinChat(s, ayse, undefined, T0, cfg);
+    expect(joinChat(s, ayse, undefined, T0, cfg).announce).toBeNull();
+    expect(s.people).toHaveLength(1);
+  });
+
+  it("keeps the configured owner on the list when the first person joins by link", () => {
+    const s = newState();
+    const { announce } = joinChat(s, ayse, "999", T0, cfg);
+    expect(recipients(s, "999")).toEqual(["999", "111"]);
+    expect(announce).toBe("👤 Ayşe now also receives these alerts.");
+  });
+
+  it("stops at five people", () => {
+    const s = newState();
+    for (let i = 1; i <= 5; i++) joinChat(s, { chat: String(i), name: `P${i}` }, undefined, T0, cfg);
+    const sixth = joinChat(s, { chat: "6", name: "P6" }, undefined, T0, cfg);
+    expect(sixth.reply).toContain("already has 5 people");
+    expect(s.people).toHaveLength(5);
+  });
+
+  it("lets people leave, and mentions /leave in the help only when it applies", () => {
+    const s = newState();
+    expect(handleCommand(s, "/help", T0, cfg)).not.toContain("/leave");
+    joinChat(s, burak, undefined, T0, cfg);
+    joinChat(s, ayse, undefined, T0, cfg);
+    expect(handleCommand(s, "/help", T0, cfg)).toContain("/leave - stop receiving these alerts");
+    expect(leaveChat(s, "222")).toBe(true);
+    expect(leaveChat(s, "222")).toBe(false);
+    expect(recipients(s, undefined)).toEqual(["111"]);
   });
 });

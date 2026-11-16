@@ -1,7 +1,7 @@
 // The watchdog's decision logic, kept free of I/O so it can be tested with a fake clock.
 // index.ts feeds it heartbeats, timer ticks and bot commands, and delivers the messages it returns.
 
-import { monthlyReport, weeklyReport } from "./reports";
+import { monthlyReport, restartNotesOn, weeklyReport } from "./reports";
 import { formatDuration, nextLocal } from "./time";
 
 export { formatDuration };
@@ -13,6 +13,24 @@ export interface Config {
   reminderMs: number;
   /** IANA zone used for report times and the weekly/monthly schedule. */
   timezone: string;
+  /** Whether brief restarts are announced, until the owner chooses with /restarts. Defaults to true. */
+  restartNotes?: boolean;
+  /** Details the /fix command can quote, so the owner does not have to look them up. */
+  help?: HelpInfo;
+}
+
+export interface HelpInfo {
+  /** Name of the hotspot the device opens when it cannot join Wi-Fi. */
+  hotspotName?: string;
+  hotspotPassword?: string;
+  /** Who to ask when the steps do not help. */
+  contact?: string;
+}
+
+/** Someone who receives the alerts and may use the bot. */
+export interface Person {
+  chat: string;
+  name: string;
 }
 
 /** What the device sends. Every field is optional so any HTTP client can act as a device. */
@@ -60,8 +78,10 @@ export interface State {
   history: Outage[];
   /** Alerts are paused until this time. */
   muteUntil: number | null;
-  /** False once the owner has switched off the "restarted" notes for brief interruptions. They are still recorded. */
+  /** The owner's choice about "restarted" notes for brief interruptions. Unset means the configured default. */
   restartNotes?: boolean;
+  /** People who joined through the invitation link. Empty means the single configured chat is used. */
+  people?: Person[];
   nextWeeklyAt: number | null;
   nextMonthlyAt: number | null;
 }
@@ -152,7 +172,7 @@ export function onHeartbeat(state: State, id: string, hb: Heartbeat, now: number
           ? `Power stayed on: the device has been running for ${formatDuration(now - prev.bootSeenAt)}, so the network or internet was down.`
           : "";
       messages.push(`🟢 ${id} is back after ${formatDuration(now - prev.lastSeen)} of silence.${detail ? "\n" + detail : ""}`);
-    } else if (state.restartNotes !== false) {
+    } else if (restartNotesOn(state, cfg)) {
       // Rebooted but back before the timeout: an outage too short to trip the silence alert.
       messages.push(`⚡ ${id} restarted (${reset ?? "no reason reported"}).${isPowerReset(reset) ? " Power was briefly lost." : ""}`);
     }
@@ -173,7 +193,7 @@ export function onTick(state: State, now: number, cfg: Config): string[] {
     messages.push("🔔 The pause is over. Alerts are on again.");
   }
   const muted = isMuted(state, now);
-  const hint = "Power or internet at that location is probably down.";
+  const hint = "Power or internet at that location is probably down.\nIf the power is on, send /fix for what to check.";
 
   for (const d of Object.values(state.devices)) {
     const silence = formatDuration(now - d.lastSeen);

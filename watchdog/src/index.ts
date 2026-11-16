@@ -1,25 +1,34 @@
 import { DurableObject } from "cloudflare:workers";
 import { type Config, type Heartbeat, type State, newState, nextWake, onHeartbeat, onTick } from "./monitor";
-import { handleCommand } from "./reports";
+import { handleCommand, joinChat, leaveChat, recipients } from "./reports";
 import { safeTimezone } from "./time";
 
 export interface Env {
   MONITOR: DurableObjectNamespace<Monitor>;
   DEVICE_TOKEN: string;
   TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_CHAT_ID: string;
+  /** The one chat that receives alerts. Optional when people join through an invitation link instead. */
+  TELEGRAM_CHAT_ID?: string;
   /** Proves that a call to /telegram really comes from Telegram. Needed for bot commands. */
   TELEGRAM_WEBHOOK_SECRET?: string;
+  /** Whoever opens t.me/<bot>?start=<this code> starts receiving the alerts. Unset disables invitations. */
+  CLAIM_CODE?: string;
   /** IANA zone such as "Europe/Amsterdam", for report times. Defaults to UTC. */
   TIMEZONE?: string;
   TIMEOUT_SECONDS?: string;
   REMINDER_MINUTES?: string;
+  /** "off" silences the notes about brief restarts until someone sends /restarts on. */
+  RESTART_MESSAGES?: string;
+  /** Quoted by /fix so the person at home does not have to look them up. */
+  SETUP_HOTSPOT_NAME?: string;
+  SETUP_HOTSPOT_PASSWORD?: string;
+  HELP_CONTACT?: string;
   /** Only overridden in local tests, to point at a fake Telegram. */
   TELEGRAM_API_BASE?: string;
 }
 
 const OUTBOX_RETRY_MS = 30_000;
-const OUTBOX_MAX = 20;
+const OUTBOX_MAX = 60;
 const DEVICE_ID = /^[A-Za-z0-9_-]{1,32}$/;
 
 function numberVar(value: string | undefined, fallback: number): number {
@@ -27,27 +36,33 @@ function numberVar(value: string | undefined, fallback: number): number {
   return value !== undefined && value !== "" && Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-/** Returns null on success, otherwise a description of what went wrong. */
-async function sendTelegram(env: Env, text: string): Promise<string | null> {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    return "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set";
-  }
+type Delivery = { ok: true } | { ok: false; error: string; gone: boolean };
+
+/** `gone` means this chat will never accept the message: the person blocked the bot or the chat does not exist. */
+async function sendTelegram(env: Env, chat: string, text: string): Promise<Delivery> {
+  if (!env.TELEGRAM_BOT_TOKEN) return { ok: false, error: "TELEGRAM_BOT_TOKEN is not set", gone: false };
   const base = env.TELEGRAM_API_BASE ?? "https://api.telegram.org";
   try {
     const res = await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text }),
+      body: JSON.stringify({ chat_id: chat, text }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (res.ok) return null;
-    return `Telegram answered ${res.status}: ${(await res.text()).slice(0, 300)}`;
+    if (res.ok) return { ok: true };
+    const body = (await res.text()).slice(0, 300);
+    const gone = res.status === 403 || (res.status === 400 && /chat not found/i.test(body));
+    return { ok: false, error: `Telegram answered ${res.status}: ${body}`, gone };
   } catch (err) {
-    return `Telegram request failed: ${err}`;
+    return { ok: false, error: `Telegram request failed: ${err}`, gone: false };
   }
 }
 
-type Meta = Pick<State, "muteUntil" | "restartNotes" | "nextWeeklyAt" | "nextMonthlyAt">;
+type Meta = Pick<State, "muteUntil" | "restartNotes" | "people" | "nextWeeklyAt" | "nextMonthlyAt">;
+interface Letter {
+  chat: string;
+  text: string;
+}
 
 /**
  * Holds every device's state and the single alarm that fires when something is due.
@@ -55,7 +70,7 @@ type Meta = Pick<State, "muteUntil" | "restartNotes" | "nextWeeklyAt" | "nextMon
  */
 export class Monitor extends DurableObject<Env> {
   private state: State = newState();
-  private outbox: string[] = [];
+  private outbox: Letter[] = [];
   private flushing: Promise<void> | null = null;
   // What is already in storage, so the rarely-changing parts are only written when they change.
   private savedMeta = "";
@@ -71,7 +86,9 @@ export class Monitor extends DurableObject<Env> {
         history: (stored.get("history") as State["history"]) ?? [],
         ...((stored.get("meta") as Meta) ?? {}),
       };
-      this.outbox = (stored.get("outbox") as string[]) ?? [];
+      // Earlier versions stored plain texts, all meant for the one configured chat.
+      const letters = (stored.get("outbox") as (Letter | string)[]) ?? [];
+      this.outbox = letters.flatMap((l) => (typeof l === "string" ? this.recipients.map((chat) => ({ chat, text: l })) : [l]));
       this.savedMeta = this.metaMark();
       this.savedHistory = this.historyMark();
     });
@@ -82,12 +99,18 @@ export class Monitor extends DurableObject<Env> {
       timeoutMs: numberVar(this.env.TIMEOUT_SECONDS, 120) * 1000,
       reminderMs: numberVar(this.env.REMINDER_MINUTES, 60) * 60_000,
       timezone: safeTimezone(this.env.TIMEZONE),
+      restartNotes: this.env.RESTART_MESSAGES?.trim().toLowerCase() !== "off",
+      help: { hotspotName: this.env.SETUP_HOTSPOT_NAME, hotspotPassword: this.env.SETUP_HOTSPOT_PASSWORD, contact: this.env.HELP_CONTACT },
     };
   }
 
+  private get recipients(): string[] {
+    return recipients(this.state, this.env.TELEGRAM_CHAT_ID);
+  }
+
   private get meta(): Meta {
-    const { muteUntil, restartNotes, nextWeeklyAt, nextMonthlyAt } = this.state;
-    return { muteUntil, restartNotes, nextWeeklyAt, nextMonthlyAt };
+    const { muteUntil, restartNotes, people, nextWeeklyAt, nextMonthlyAt } = this.state;
+    return { muteUntil, restartNotes, people, nextWeeklyAt, nextMonthlyAt };
   }
   private metaMark(): string {
     return JSON.stringify(this.meta);
@@ -98,22 +121,39 @@ export class Monitor extends DurableObject<Env> {
   }
 
   async heartbeat(id: string, hb: Heartbeat): Promise<void> {
-    await this.commit(onHeartbeat(this.state, id, hb, Date.now(), this.cfg));
+    await this.commit(this.toEveryone(onHeartbeat(this.state, id, hb, Date.now(), this.cfg)));
   }
 
   async alarm(): Promise<void> {
-    await this.commit(onTick(this.state, Date.now(), this.cfg));
+    await this.commit(this.toEveryone(onTick(this.state, Date.now(), this.cfg)));
   }
 
-  /** A message typed to the bot. Returns the reply. */
-  async command(text: string): Promise<string> {
-    const reply = handleCommand(this.state, text, Date.now(), this.cfg);
+  /** A message typed to the bot. Returns the reply, or null if that chat has no business here. */
+  async command(chat: string, text: string): Promise<string | null> {
+    if (!this.recipients.includes(chat)) return null;
+    let reply: string;
+    if (/^\/leave(@\S*)?$/i.test(text.trim())) {
+      reply = leaveChat(this.state, chat)
+        ? "You will no longer receive these alerts. Open the invitation link again to come back."
+        : "You are the configured owner of this device, so there is nothing to leave.";
+    } else {
+      reply = handleCommand(this.state, text, Date.now(), this.cfg);
+    }
     await this.commit([]);
     return reply;
   }
 
-  async status(): Promise<Meta & { devices: State["devices"]; outages: number; undelivered: number }> {
-    return { devices: this.state.devices, outages: this.state.history.length, undelivered: this.outbox.length, ...this.meta };
+  /** Someone opened the invitation link with the right code. Returns the welcome message. */
+  async join(chat: string, name: string): Promise<string> {
+    const { reply, announce } = joinChat(this.state, { chat, name }, this.env.TELEGRAM_CHAT_ID, Date.now(), this.cfg);
+    const others = announce ? this.recipients.filter((c) => c !== chat).map((c) => ({ chat: c, text: announce })) : [];
+    await this.commit(others);
+    return reply;
+  }
+
+  async status(): Promise<Omit<Meta, "people"> & { devices: State["devices"]; outages: number; undelivered: number; people: number }> {
+    // Chat ids stay inside; callers only learn how many people receive the alerts.
+    return { ...this.meta, devices: this.state.devices, outages: this.state.history.length, undelivered: this.outbox.length, people: this.recipients.length };
   }
 
   async remove(id: string): Promise<boolean> {
@@ -123,10 +163,24 @@ export class Monitor extends DurableObject<Env> {
     return true;
   }
 
+  /** Sends a test message to everyone. Returns null on success, otherwise what went wrong. */
+  async test(): Promise<string | null> {
+    if (this.recipients.length === 0) return "Nobody receives the alerts yet: no chat is configured and nobody has opened the invitation link";
+    for (const chat of this.recipients) {
+      const sent = await sendTelegram(this.env, chat, "👋 Test message from your grid-heartbeat watchdog.");
+      if (!sent.ok) return sent.error;
+    }
+    return null;
+  }
+
+  private toEveryone(texts: string[]): Letter[] {
+    return texts.flatMap((text) => this.recipients.map((chat) => ({ chat, text })));
+  }
+
   /** Persist state, queue and try to deliver messages, then arm the alarm for whatever comes next. */
-  private async commit(messages: string[]): Promise<void> {
-    if (messages.length) {
-      this.outbox.push(...messages);
+  private async commit(letters: Letter[]): Promise<void> {
+    if (letters.length) {
+      this.outbox.push(...letters);
       // If Telegram stays unreachable, keep the most recent alerts rather than growing forever.
       this.outbox.splice(0, Math.max(0, this.outbox.length - OUTBOX_MAX));
     }
@@ -153,12 +207,23 @@ export class Monitor extends DurableObject<Env> {
 
   private async drainOutbox(): Promise<void> {
     while (this.outbox.length) {
-      const error = await sendTelegram(this.env, this.outbox[0]);
-      if (error) {
-        console.error(`alert not delivered, will retry: ${error}`);
+      const { chat, text } = this.outbox[0];
+      const sent = await sendTelegram(this.env, chat, text);
+      if (!sent.ok && !sent.gone) {
+        console.error(`alert not delivered, will retry: ${sent.error}`);
         return;
       }
-      this.outbox.shift();
+      if (!sent.ok) {
+        // That person blocked the bot or deleted the chat. Stop writing to them instead of retrying forever.
+        console.error(`dropping messages for a chat that no longer accepts them: ${sent.error}`);
+        this.outbox = this.outbox.filter((l) => l.chat !== chat);
+        if (leaveChat(this.state, chat)) {
+          await this.ctx.storage.put("meta", this.meta);
+          this.savedMeta = this.metaMark();
+        }
+      } else {
+        this.outbox.shift();
+      }
       await this.ctx.storage.put("outbox", this.outbox);
     }
   }
@@ -188,25 +253,40 @@ function parseHeartbeat(body: string): Heartbeat {
   };
 }
 
+interface TelegramUpdate {
+  message?: { text?: unknown; chat?: { id?: unknown }; from?: { first_name?: unknown } };
+}
+
 /** Telegram calls this for every message typed to the bot. The reply travels back in the response. */
 async function telegramWebhook(request: Request, env: Env, monitor: DurableObjectStub<Monitor>): Promise<Response> {
   const given = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
   if (!env.TELEGRAM_WEBHOOK_SECRET || !(await sameSecret(given, env.TELEGRAM_WEBHOOK_SECRET))) {
     return new Response("forbidden\n", { status: 403 });
   }
-  let update: { message?: { text?: unknown; chat?: { id?: unknown } } } | null = null;
+  let update: TelegramUpdate | null = null;
   try {
     update = await request.json();
   } catch {
     // not JSON; ignored below
   }
   const text = update?.message?.text;
-  // Only the owner's chat may talk to the bot. Everything else is acknowledged and ignored.
-  if (typeof text !== "string" || String(update?.message?.chat?.id) !== String(env.TELEGRAM_CHAT_ID)) {
-    return new Response("ok\n");
+  const chatId = update?.message?.chat?.id;
+  if (typeof text !== "string" || (typeof chatId !== "number" && typeof chatId !== "string")) return new Response("ok\n");
+  const chat = String(chatId);
+  const answer = (reply: string) => Response.json({ method: "sendMessage", chat_id: chat, text: reply });
+
+  // An invitation link arrives as "/start <code>". The right code adds this chat to the people who get alerts.
+  const invitation = /^\/start(?:@\S+)?\s+(\S+)$/.exec(text.trim());
+  if (invitation && env.CLAIM_CODE) {
+    if (!(await sameSecret(invitation[1], env.CLAIM_CODE))) return answer("That invitation is not valid for this device. Ask the person who set it up for the current one.");
+    const first = update?.message?.from?.first_name;
+    const name = typeof first === "string" && first.trim() ? first.trim().slice(0, 40) : "Someone";
+    return answer(await monitor.join(chat, name));
   }
-  const reply = await monitor.command(text.slice(0, 200));
-  return Response.json({ method: "sendMessage", chat_id: env.TELEGRAM_CHAT_ID, text: reply });
+
+  // Only people who receive the alerts may talk to the bot. Everyone else is acknowledged and ignored.
+  const reply = await monitor.command(chat, text.slice(0, 200));
+  return reply === null ? new Response("ok\n") : answer(reply);
 }
 
 export default {
@@ -237,7 +317,7 @@ export default {
         : new Response("no such device\n", { status: 404 });
     }
     if (route === "POST /test" && id === undefined) {
-      const error = await sendTelegram(env, "👋 Test message from your grid-heartbeat watchdog.");
+      const error = await monitor.test();
       return error ? new Response(error + "\n", { status: 502 }) : new Response("sent\n");
     }
     return new Response("not found\n", { status: 404 });
