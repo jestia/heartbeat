@@ -4,16 +4,22 @@
     pip install manifold3d numpy
     python make_case.py            # writes pulse-case-base.stl and pulse-case-lid.stl next to this file
 
+    pip install matplotlib
+    python make_case.py --name ZEYNEP    # also writes pulse-case-lid-zeynep.stl, with that name sunk into the lid
+
 All sizes are millimetres. If a part does not fit, change the numbers in the first two blocks
 and run it again. Model origin: centre of the case footprint, z = 0 on the underside. The USB-C
 opening is on the -X end.
 """
 
+import argparse
 import pathlib
+import re
 import struct
+import unicodedata
 
 import numpy as np
-from manifold3d import CrossSection, JoinType, Manifold
+from manifold3d import CrossSection, FillRule, JoinType, Manifold
 
 # --- What goes inside ---------------------------------------------------------------------
 PCB_L, PCB_W = 21.0, 17.8   # Seeed XIAO ESP32-C3 outline (USB-C on a short edge)
@@ -71,9 +77,9 @@ def rod_x(x0, x1, y, z, radius):
     return Manifold.cylinder(x1 - x0, radius, radius, 24).rotate([0, 90, 0]).translate([x0, y, z])
 
 
-def pulse_mark(scale, stroke):
-    """The heartbeat line: flat, small rise, deep dip, recovery, flat."""
-    pts = np.array([(-9, 0), (-5, 0), (-3, 5), (0, -4), (2, 0), (9, 0)], dtype=float) * scale
+def pulse_mark(scale, stroke, flatten=1.0):
+    """The heartbeat line: flat, small rise, deep dip, recovery, flat. `flatten` below 1 makes it lower."""
+    pts = np.array([(-9, 0), (-5, 0), (-3, 5), (0, -4), (2, 0), (9, 0)], dtype=float) * [scale, scale * flatten]
     dots = [CrossSection.circle(stroke / 2, 24).translate(tuple(p)) for p in pts]
     strokes = [CrossSection.batch_hull([a, b]) for a, b in zip(dots, dots[1:])]
     mark = strokes[0]
@@ -113,7 +119,22 @@ def make_base():
     return base
 
 
-def make_lid():
+def text_mark(text, max_width, max_height):
+    """The outline of `text` in a bold typeface, scaled to fill the given box and centred on the origin."""
+    try:
+        from matplotlib.font_manager import FontProperties
+        from matplotlib.textpath import TextPath
+    except ImportError:
+        raise SystemExit("Putting a name on the lid needs one more package:  pip install matplotlib")
+    path = TextPath((0, 0), text, size=10, prop=FontProperties(family="DejaVu Sans", weight="bold"))
+    # Even-odd filling keeps the holes in letters such as P, A and O open.
+    letters = CrossSection([poly.tolist() for poly in path.to_polygons(closed_only=True)], FillRule.EvenOdd)
+    x0, y0, x1, y1 = letters.bounds()
+    scale = min(max_width / (x1 - x0), max_height / (y1 - y0))
+    return letters.translate([-(x0 + x1) / 2, -(y0 + y1) / 2]).scale([scale, scale])
+
+
+def make_lid(name=None):
     # Top plate with a chamfered upper edge.
     lid = Manifold.batch_hull([
         prism(outline(), Z_SPLIT, HEIGHT - CHAMFER_TOP),
@@ -137,8 +158,12 @@ def make_lid():
         y = side * (PCB_W / 2 - 0.9)
         lid += box(BOARD_X0 + 4, BOARD_X1 - 1, y - 0.6, y + 0.6, PCB_TOP_MAX + 0.2, Z_SPLIT)
 
-    # Heartbeat line sunk into the top.
-    mark = pulse_mark(scale=min(LENGTH * 0.6 / 18, (WIDTH - 10) / 9), stroke=1.6)
+    # Sunk into the top: the heartbeat line alone, or a name with a flatter heartbeat line under it.
+    if name:
+        mark = text_mark(name, LENGTH - 19, 10.5).translate([0, 6.25])
+        mark += pulse_mark(scale=(LENGTH - 19) / 18, stroke=1.3, flatten=0.24).translate([0, -6])
+    else:
+        mark = pulse_mark(scale=min(LENGTH * 0.6 / 18, (WIDTH - 10) / 9), stroke=1.6)
     lid -= prism(mark, HEIGHT - 0.6, HEIGHT + 1)
     return lid
 
@@ -162,11 +187,23 @@ def lid_for_printing(lid):
     return lid.rotate([180, 0, 0]).translate([0, 0, HEIGHT])
 
 
+def file_slug(text):
+    """A file-name-safe version of the name: "Şule Öz" -> "sule-oz"."""
+    plain = unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", plain.replace("ı", "i")).strip("-") or "name"
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate the print files for the Pulse case.")
+    parser.add_argument("--name", help="a name or initials to sink into the lid, written to its own lid file")
+    args = parser.parse_args()
+
     here = pathlib.Path(__file__).parent
-    base, lid = make_base(), make_lid()
-    write_stl(base, here / "pulse-case-base.stl")
-    write_stl(lid_for_printing(lid), here / "pulse-case-lid.stl")
+    parts = {"pulse-case-base.stl": make_base(), "pulse-case-lid.stl": make_lid()}
+    if args.name:
+        parts[f"pulse-case-lid-{file_slug(args.name)}.stl"] = make_lid(args.name)
     print(f"Case outside: {LENGTH:.1f} x {WIDTH:.1f} x {HEIGHT:.1f} mm")
-    for name, part in (("base", base), ("lid", lid)):
-        print(f"  {name}: {part.volume() / 1000:.2f} cm3, {part.num_tri()} triangles")
+    for filename, part in parts.items():
+        # Lids are written upside down, so their flat top lies on the print bed.
+        write_stl(part if "base" in filename else lid_for_printing(part), here / filename)
+        print(f"  {filename}: {part.volume() / 1000:.2f} cm3, {part.num_tri()} triangles")

@@ -6,3 +6,6 @@ gifts/
 
 # macOS folder clutter
 .DS_Store
+
+# Case lids made for a particular person with `make_case.py --name`.
+case/pulse-case-lid-*.stl

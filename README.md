@@ -254,6 +254,17 @@ pip install manifold3d numpy
 python case/make_case.py
 ```
 
+To sink a name or initials into the lid, above a flatter heartbeat line, add `--name`. It
+writes an extra lid file next to the plain one:
+
+```bash
+pip install matplotlib
+python case/make_case.py --name ZEYNEP
+```
+
+The engraving is 0.6 mm deep. For letters in a second colour without a multi-colour printer,
+pause the lid print at 0.6 mm (after the third 0.2 mm layer) and change the filament.
+
 ## How it is put together
 
 ```
