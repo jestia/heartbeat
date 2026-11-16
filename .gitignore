@@ -1,0 +1,5 @@
+# Your own tokens and Wi-Fi password. Never commit these.
+my-settings.txt
+
+# macOS folder clutter
+.DS_Store

@@ -1,0 +1,81 @@
+# Grid heartbeat device: an ESP32-C3 that calls the watchdog every 30 s for as long as it has
+# power and Wi-Fi. It never sends alerts itself. The watchdog alerts when the calls stop.
+#
+# Flash over USB the first time:   esphome run heartbeat.yaml
+# Later updates go over Wi-Fi with the same command.
+
+substitutions:
+  device_name: grid-heartbeat
+  # Keep the watchdog's TIMEOUT_SECONDS at 3-4x this.
+  heartbeat_interval: 30s
+
+esphome:
+  name: ${device_name}
+
+esp32:
+  # Works for any 4 MB ESP32-C3 board (SuperMini, Seeed XIAO ESP32-C3, DevKitM-1).
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Mains powered, so trade power for a steadier connection.
+  power_save_mode: none
+  # If the configured Wi-Fi can't be joined, the device opens this hotspot so you can
+  # enter new credentials from a phone instead of reflashing.
+  ap:
+    ssid: ${device_name} setup
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Optional status light: blinks while something is wrong (for example no Wi-Fi), off when healthy.
+# The Seeed XIAO ESP32-C3 has no light to drive, so this is off by default. On an ESP32-C3
+# SuperMini, whose onboard LED is GPIO8 (active-low), uncomment the block.
+# status_led:
+#   pin:
+#     number: GPIO8
+#     inverted: true
+#     ignore_strapping_warning: true
+
+# Exposes why the chip last booted, which is how the watchdog tells a power cut from a network gap.
+debug:
+
+text_sensor:
+  - platform: debug
+    reset_reason:
+      id: reset_reason
+      name: Reset reason
+
+http_request:
+  verify_ssl: true
+  timeout: 10s
+
+interval:
+  - interval: ${heartbeat_interval}
+    then:
+      - if:
+          condition:
+            and:
+              - wifi.connected:
+              # Wait until the reset reason is known, so the first call after a boot never lacks it.
+              - lambda: return id(reset_reason).has_state();
+          then:
+            - http_request.post:
+                url: !secret heartbeat_url
+                request_headers:
+                  Authorization: !secret heartbeat_auth
+                json: |-
+                  // A fresh random number per boot: if it changes, the device restarted.
+                  static uint32_t boot_id = random_uint32();
+                  root["boot"] = boot_id;
+                  root["reset"] = id(reset_reason).state;
+                  root["rssi"] = wifi::global_wifi_component->wifi_rssi();

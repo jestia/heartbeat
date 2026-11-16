@@ -1,0 +1,6 @@
+# Your Wi-Fi password and device token, and the backup the setup helper keeps of them.
+secrets.yaml
+secrets.yaml.bak
+
+# ESPHome build output
+.esphome/

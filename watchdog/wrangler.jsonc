@@ -1,0 +1,26 @@
+{
+  "name": "grid-heartbeat",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+
+  // One Durable Object holds all device state and owns the "nobody called" alarm.
+  "durable_objects": {
+    "bindings": [{ "name": "MONITOR", "class_name": "Monitor" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Monitor"] }],
+
+  "vars": {
+    // Seconds of silence before you are alerted. Keep it at 3-4x the device's heartbeat interval.
+    "TIMEOUT_SECONDS": "120",
+    // While a device stays silent, repeat the alert this often. "0" turns reminders off.
+    "REMINDER_MINUTES": "60"
+  }
+
+  // Secrets (set with `npx wrangler secret put NAME`):
+  //   DEVICE_TOKEN        shared secret the device sends as "Authorization: Bearer ..."
+  //   TELEGRAM_BOT_TOKEN  from @BotFather
+  //   TELEGRAM_CHAT_ID    the chat that receives alerts
+  // For the bot commands and local report times (setup.mjs stores both for you):
+  //   TELEGRAM_WEBHOOK_SECRET  random string that Telegram sends back with every message
+  //   TIMEZONE                 zone name such as Europe/Amsterdam; UTC if unset
+}
