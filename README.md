@@ -42,10 +42,12 @@ Send these to your bot in Telegram. It answers only in your own chat.
 | Command | What it does |
 |---|---|
 | `/status` | Whether the device is alive right now, how long it has run, and its Wi-Fi signal |
+| `/fix` | Step-by-step help when something seems wrong: what to check, and how to give the device a new Wi-Fi password from a phone |
 | `/history` | The last ten outages with start time, length and cause, plus this month's total |
 | `/mute 2h` | Pauses alerts, for example while you work on the electrics (`30m`, `2h`, `1d`, up to 7 days) |
 | `/unmute` | Turns alerts back on |
 | `/restarts off` | Stops the ⚡ messages about brief restarts. They are still recorded. `/restarts on` brings them back |
+| `/leave` | For people who joined through an invitation: stop receiving the alerts |
 
 Outages that happen while alerts are paused are still recorded. If the device is still silent
 when the pause ends, you are told then. If the weekly check-in stops arriving, the watchdog
@@ -151,6 +153,42 @@ Finally copy `firmware/secrets.example.yaml` to `firmware/secrets.yaml` and fill
 
 </details>
 
+## Giving one as a gift
+
+`gift.mjs` prepares a device for someone else's home. They need no computer, no Cloudflare
+account and no technical knowledge: they plug it in and scan a code.
+
+```bash
+node gift.mjs
+```
+
+The wizard takes you through eight steps and checks each one before moving on:
+
+1. Checks this computer and installs anything that is missing.
+2. Asks who it is for.
+3. Asks for a new Telegram bot token (each home gets its own bot) and checks it with Telegram.
+4. Publishes a separate watchdog for them in your Cloudflare account.
+5. Connects your own phone to that bot, by scanning a code, so you can test.
+6. Loads the firmware with your Wi-Fi and waits for a real heartbeat. If none arrives, it reads
+   the board's log and tells you why: antenna not attached, wrong password, network not found.
+7. Loads their Wi-Fi name and password, which you type in.
+8. Writes a printable card with their invitation code and what to do if something goes wrong.
+
+You can stop at any point and run it again; it carries on where you left off. Everything about
+a gift is kept in `gifts/<name>/`, which git ignores because it holds passwords.
+
+At their home they plug the device in, scan the code on the card and press Start. The bot
+greets them and reports "home is online" within a few minutes. You are told when they join and
+keep receiving their alerts too, until you send `/leave` to that bot.
+
+When something goes wrong later, they can help themselves: `/fix` checks the device and lists
+what to do, and the card has the same steps for when the bot cannot be reached. If their Wi-Fi
+name or password changes, the device opens its own hotspot and they enter the new details from
+their phone. Scanning the code again connects a new phone.
+
+The Wi-Fi details from step 7 cannot be tested from your home. If the device stays silent at
+theirs, that is the first thing to check, and the hotspot is how to correct it.
+
 ## Tuning
 
 - **How fast it alerts:** `TIMEOUT_SECONDS` in `watchdog/wrangler.jsonc` (default 120). A short
@@ -227,7 +265,8 @@ watchdog/src/time.ts        durations and local time
 watchdog/test/              tests for the three files above
 watchdog/sim/device.mjs     the pretend device
 case/                       the printable case and the script that generates it
-setup.mjs                   the setup helper
+setup.mjs                   the setup helper for your own device
+gift.mjs                    the wizard that prepares a device for someone else
 ```
 
 - **Firmware.** [ESPHome](https://esphome.io) supplies Wi-Fi reconnects, a setup hotspot,
@@ -245,8 +284,8 @@ allowed 100,000 a day when this was written.
 
 ## Keeping secrets out of the repository
 
-`my-settings.txt` and `firmware/secrets.yaml` hold your tokens and your Wi-Fi password. Both
-are listed in `.gitignore`, so git leaves them out. Do not add them by hand, and do not upload
+`my-settings.txt`, `firmware/secrets.yaml` and everything under `gifts/` hold tokens and Wi-Fi
+passwords. All are listed in `.gitignore`, so git leaves them out. Do not add them by hand, and do not upload
 the folder through GitHub's website, which ignores those rules.
 
 ## Limits to know about
