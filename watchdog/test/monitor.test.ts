@@ -387,7 +387,7 @@ describe("reports", () => {
 });
 
 describe("help for the person at home", () => {
-  const helped: Config = { ...cfg, timeoutMs: 15 * MIN, help: { hotspotName: "heartbeat-ayse setup", hotspotPassword: "3f9a12c0b7de", contact: "Burak" } };
+  const helped: Config = { ...cfg, timeoutMs: 15 * MIN, help: { hotspotName: "heartbeat-zoe setup", hotspotPassword: "3f9a12c0b7de", contact: "Alex" } };
 
   it("points to /fix in the alert", () => {
     const s = newState();
@@ -414,8 +414,8 @@ describe("help for the person at home", () => {
     tick(s, T0 + 15 * MIN, helped);
     const text = handleCommand(s, "/fix", T0 + 23 * MIN, helped);
     expect(text).toContain("home has been silent for 23 min. Check these in order:");
-    expect(text).toContain('join the Wi-Fi network called "heartbeat-ayse setup". Its password is 3f9a12c0b7de.');
-    expect(text).toContain("Still silent? Then ask Burak.");
+    expect(text).toContain('join the Wi-Fi network called "heartbeat-zoe setup". Its password is 3f9a12c0b7de.');
+    expect(text).toContain("Still silent? Then ask Alex.");
     expect(text.match(/^\d\./gm)).toEqual(["1.", "2.", "3.", "4.", "5."]);
   });
 
@@ -429,26 +429,26 @@ describe("help for the person at home", () => {
 });
 
 describe("invitations", () => {
-  const ayse = { chat: "111", name: "Ayşe" };
-  const burak = { chat: "222", name: "Burak" };
+  const zoe = { chat: "111", name: "Zoë" };
+  const alex = { chat: "222", name: "Alex" };
 
   it("sends alerts to the configured chat until someone joins, then to everyone who joined", () => {
     const s = newState();
     expect(recipients(s, "999")).toEqual(["999"]);
     expect(recipients(s, undefined)).toEqual([]);
-    const first = joinChat(s, burak, undefined, T0, cfg);
-    expect(first.reply).toContain("👋 Hello Burak! I watch the small device plugged in at home.");
+    const first = joinChat(s, alex, undefined, T0, cfg);
+    expect(first.reply).toContain("👋 Hello Alex! I watch the small device plugged in at home.");
     expect(first.reply).toContain("The device has not connected yet.");
     expect(first.announce).toBeNull();
-    const second = joinChat(s, ayse, undefined, T0, cfg);
-    expect(second.announce).toBe("👤 Ayşe now also receives these alerts.");
+    const second = joinChat(s, zoe, undefined, T0, cfg);
+    expect(second.announce).toBe("👤 Zoë now also receives these alerts.");
     expect(recipients(s, undefined)).toEqual(["222", "111"]);
   });
 
   it("welcomes with the device's current state and the alert time", () => {
     const s = newState();
     onHeartbeat(s, "home", { boot: "a" }, T0, cfg);
-    const { reply } = joinChat(s, ayse, undefined, T0 + SEC, { ...cfg, timeoutMs: 15 * MIN });
+    const { reply } = joinChat(s, zoe, undefined, T0 + SEC, { ...cfg, timeoutMs: 15 * MIN });
     expect(reply).toContain("out for more than 15 min");
     expect(reply).toContain("🟢 home is online.");
     expect(reply).toContain("/fix - what to check if something seems wrong");
@@ -456,16 +456,16 @@ describe("invitations", () => {
 
   it("does not add the same person twice", () => {
     const s = newState();
-    joinChat(s, ayse, undefined, T0, cfg);
-    expect(joinChat(s, ayse, undefined, T0, cfg).announce).toBeNull();
+    joinChat(s, zoe, undefined, T0, cfg);
+    expect(joinChat(s, zoe, undefined, T0, cfg).announce).toBeNull();
     expect(s.people).toHaveLength(1);
   });
 
   it("keeps the configured owner on the list when the first person joins by link", () => {
     const s = newState();
-    const { announce } = joinChat(s, ayse, "999", T0, cfg);
+    const { announce } = joinChat(s, zoe, "999", T0, cfg);
     expect(recipients(s, "999")).toEqual(["999", "111"]);
-    expect(announce).toBe("👤 Ayşe now also receives these alerts.");
+    expect(announce).toBe("👤 Zoë now also receives these alerts.");
   });
 
   it("stops at five people", () => {
@@ -479,8 +479,8 @@ describe("invitations", () => {
   it("lets people leave, and mentions /leave in the help only when it applies", () => {
     const s = newState();
     expect(handleCommand(s, "/help", T0, cfg)).not.toContain("/leave");
-    joinChat(s, burak, undefined, T0, cfg);
-    joinChat(s, ayse, undefined, T0, cfg);
+    joinChat(s, alex, undefined, T0, cfg);
+    joinChat(s, zoe, undefined, T0, cfg);
     expect(handleCommand(s, "/help", T0, cfg)).toContain("/leave - stop receiving these alerts");
     expect(leaveChat(s, "222")).toBe(true);
     expect(leaveChat(s, "222")).toBe(false);
