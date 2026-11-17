@@ -18,6 +18,24 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const project = path.dirname(fileURLToPath(import.meta.url));
+
+/** Boards the firmware supports, with the settings written into firmware/heartbeat.yaml's substitutions. */
+export const BOARDS = {
+  "xiao-c3": {
+    label: "Seeed XIAO ESP32-C3: comes with a separate antenna on a thin wire",
+    short: "Seeed XIAO ESP32-C3",
+    settings: { board: "esp32-c3-devkitm-1", cpu_frequency: "160MHZ", wifi_power_save: "none" },
+    antenna: true,
+  },
+  "s3-zero": {
+    label: "ESP32-S3 Zero (Waveshare or TENSTAR): small square board, antenna built in",
+    short: "ESP32-S3 Zero",
+    // Slower chip and a dozing radio: less heat in its tiny case, and a heartbeat needs neither.
+    settings: { board: "esp32-s3-devkitc-1", cpu_frequency: "80MHZ", wifi_power_save: "light" },
+    antenna: false,
+  },
+};
+const board = () => BOARDS[s.BOARD] ?? BOARDS["xiao-c3"];
 const watchdogDir = path.join(project, "watchdog");
 const TOTAL = 8;
 const DEVICE = "home"; // what the bot calls the device in its messages
@@ -91,7 +109,7 @@ async function yes(question, fallback = true) {
 async function choose(question, options, fallback = 0) {
   const list = options.map((o, i) => `     ${i + 1}. ${o}`).join("\n");
   const answer = await ask(`${question}\n${list}\n   Type the number`, {
-    fallback: String(fallback + 1),
+    fallback: fallback === null ? "" : String(fallback + 1),
     validate: (a) => (/^\d+$/.test(a) && Number(a) >= 1 && Number(a) <= options.length ? null : `Type a number from 1 to ${options.length}.`),
   });
   return Number(answer) - 1;
@@ -237,11 +255,26 @@ async function findBoard() {
 }
 
 const quote = JSON.stringify;
+/** firmware/heartbeat.yaml with the gift's name and the board's settings filled into its substitutions. */
+export function firmwareFor(base, hostname, settings) {
+  let text = base;
+  for (const [key, value] of Object.entries({ device_name: hostname, ...settings })) {
+    // Only the substitution lines, which hold plain values, never the "${...}" lines that use them.
+    const line = new RegExp(`^(  ${key}: )(?!\\$)\\S+$`, "m");
+    if (!line.test(text)) throw new Error(`firmware/heartbeat.yaml has no substitution line "  ${key}: ...", so I cannot set it for this board.`);
+    text = text.replace(line, (_, start) => `${start}${value}`);
+  }
+  return text;
+}
+
 function writeFirmware(dir, hostname, wifiName, wifiPassword) {
   fs.mkdirSync(dir, { recursive: true });
   const base = fs.readFileSync(path.join(project, "firmware", "heartbeat.yaml"), "utf8");
-  if (!base.includes("device_name: grid-heartbeat")) stop("firmware/heartbeat.yaml no longer has the line 'device_name: grid-heartbeat', so I cannot name the gift's board.");
-  fs.writeFileSync(path.join(dir, "heartbeat.yaml"), base.replace("device_name: grid-heartbeat", `device_name: ${hostname}`));
+  try {
+    fs.writeFileSync(path.join(dir, "heartbeat.yaml"), firmwareFor(base, hostname, board().settings));
+  } catch (err) {
+    stop(err.message);
+  }
   fs.writeFileSync(
     path.join(dir, "secrets.yaml"),
     [
@@ -264,7 +297,15 @@ async function flash(esphome, dir, port) {
     if (result.status === 0) return ok("Firmware loaded onto the board.");
     say("\n   ✗ Loading the firmware did not work. The messages above say why.");
     note("If it could not connect to the board: unplug it, hold its BOOT button, plug it back in while holding.");
-    if (!(await yes("Try again?"))) stop("The firmware was not loaded.");
+    note(`If they mention a different chip than the ${board().short} (for example "This chip is ESP32-S3"), the board type is wrong.`);
+    const other = Object.keys(BOARDS).find((k) => k !== s.BOARD);
+    const next = await choose("What now?", ["Try again.", `Switch to the ${BOARDS[other].short} and try again.`, "Stop here."]);
+    if (next === 2) stop("The firmware was not loaded.");
+    if (next === 1) {
+      remember("BOARD", other);
+      fs.writeFileSync(path.join(dir, "heartbeat.yaml"), firmwareFor(fs.readFileSync(path.join(project, "firmware", "heartbeat.yaml"), "utf8"), s.HOSTNAME, board().settings));
+      ok(`Switched to the ${board().short}.`);
+    }
   }
 }
 
@@ -272,9 +313,12 @@ async function flash(esphome, dir, port) {
  * Turns the board's log into advice. `fix` says where the remedy lies: on the "board" itself
  * (nothing to retype), in the Wi-Fi "details" that were entered, or "unknown".
  */
-export function diagnose(log, wifiName) {
+export function diagnose(log, wifiName, hasAntennaWire = true) {
   if (/No networks found/i.test(log)) {
-    return { fix: "board", lines: ["The board cannot hear any Wi-Fi at all.", "Its antenna is almost certainly not attached. Press the antenna's small round connector straight down onto the tiny gold socket on the board until it clicks."] };
+    const why = hasAntennaWire
+      ? "Its antenna is almost certainly not attached. Press the antenna's small round connector straight down onto the tiny gold socket on the board until it clicks."
+      : "Its antenna is the small block at the end opposite the USB socket. Move the board closer to the router and away from metal. If it still hears nothing, the board may be faulty.";
+    return { fix: "board", lines: ["The board cannot hear any Wi-Fi at all.", why] };
   }
   if (/Auth Expired|Authentication Failed|4-Way Handshake Timeout|Handshake Failed/i.test(log)) {
     return { fix: "details", lines: [`The Wi-Fi "${wifiName}" refused the password.`, "Check it character by character. Capital letters, and 0 versus O, are the usual culprits."] };
@@ -290,7 +334,7 @@ export function diagnose(log, wifiName) {
 
 // ---------------------------------------------------------------- the card
 
-function cardHtml({ name, giver, link, qrSvg, hotspotName, hotspotPassword, minutes }) {
+function cardHtml({ name, giver, link, qrSvg, hotspotName, hotspotPassword, minutes, buttons }) {
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Home heartbeat for ${esc(name)}</title>
@@ -318,7 +362,7 @@ function cardHtml({ name, giver, link, qrSvg, hotspotName, hotspotPassword, minu
 <div class="start">
   ${qrSvg}
   <ol>
-    <li><strong>Plug it in.</strong> Use the charger and cable in the box, in a socket where your Wi-Fi is good. There is no light and no button; that is normal.</li>
+    <li><strong>Plug it in.</strong> Use the charger and cable in the box, in a socket where your Wi-Fi is good. ${buttons ? "It has no screen, and you never need to press its two small buttons." : "There is no light and no button; that is normal."}</li>
     <li><strong>Scan this code</strong> with your phone's camera. It opens Telegram (install the Telegram app first if you do not have it). Press <strong>Start</strong>.</li>
     <li><strong>Done.</strong> The bot says hello. Within a few minutes of the device being plugged in it adds “✅ home is online”.</li>
   </ol>
@@ -444,7 +488,12 @@ async function chooseGift() {
       fallback: "15", validate: (m) => (/^\d+$/.test(m) && Number(m) >= 2 && Number(m) <= 1440 ? null : "Type a whole number between 2 and 1440."),
     }));
   }
-  ok(`Gift for ${s.RECIPIENT_NAME}, from ${s.GIVER_NAME}. Alert after ${s.ALERT_MINUTES} minutes. Time zone ${s.TIMEZONE}.`);
+  if (!BOARDS[s.BOARD]) {
+    const keys = Object.keys(BOARDS);
+    const picked = await choose("Which board are you giving? Look at it: does it have a separate antenna on a thin wire?", keys.map((k) => BOARDS[k].label), null);
+    remember("BOARD", keys[picked]);
+  }
+  ok(`Gift for ${s.RECIPIENT_NAME}, from ${s.GIVER_NAME}, on a ${board().short}. Alert after ${s.ALERT_MINUTES} minutes. Time zone ${s.TIMEZONE}.`);
   note(`Everything about this gift is kept in ${path.dirname(settingsFile)}`);
 }
 
@@ -568,7 +617,7 @@ async function testHere(esphome) {
       remember("TEST_WIFI_PASSWORD", await askWifiPassword("Its password"));
     }
   }
-  note("If the board has a separate antenna, press its connector onto the board now until it clicks.");
+  note(board().antenna ? "Press the antenna's connector onto the board now until it clicks." : "This board has its antenna built in, so there is nothing to attach.");
   const dir = path.join(path.dirname(settingsFile), "firmware");
   const port = await findBoard();
 
@@ -583,11 +632,11 @@ async function testHere(esphome) {
     if (await waitForHeartbeat(since)) break;
 
     say("\n   ✗ No heartbeat arrived. Reading the board's log to find out why (25 seconds)...");
-    const found = diagnose(await listen(esphome, ["logs", "heartbeat.yaml", "--device", port], dir, FAST ? 2 : 25), s.TEST_WIFI_NAME);
+    const found = diagnose(await listen(esphome, ["logs", "heartbeat.yaml", "--device", port], dir, FAST ? 2 : 25), s.TEST_WIFI_NAME, board().antenna);
     say("");
     for (const line of found.lines) say(`   → ${line}`);
     const next = await choose("What now?", [
-      "I fixed it on the board (antenna, cable). Check again.",
+      board().antenna ? "I fixed it on the board (antenna, cable). Check again." : "I moved the board or changed the cable. Check again.",
       "Let me type the Wi-Fi name and password again.",
       "Load the firmware once more, unchanged.",
       "Stop here.",
@@ -641,7 +690,7 @@ async function makeCard() {
   const qrSvg = await qrcode().toString(inviteLink(), { type: "svg", margin: 1 });
   fs.writeFileSync(file, cardHtml({
     name: s.RECIPIENT_NAME, giver: s.GIVER_NAME, link: inviteLink(), qrSvg,
-    hotspotName: `${s.HOSTNAME} setup`, hotspotPassword: s.SETUP_HOTSPOT_PASSWORD, minutes: s.ALERT_MINUTES,
+    hotspotName: `${s.HOSTNAME} setup`, hotspotPassword: s.SETUP_HOTSPOT_PASSWORD, minutes: s.ALERT_MINUTES, buttons: s.BOARD === "s3-zero",
   }));
   ok(`Card written to ${file}`);
   if (process.platform === "darwin" && !FAST) spawnSync("open", [file]);
@@ -667,7 +716,7 @@ async function makeCard() {
 async function main() {
   openPrompt();
   say("\nThis prepares a heartbeat device as a gift. It takes about 30 minutes, most of it waiting.");
-  say("You need: the new board with its antenna, a USB-C data cable, your phone with Telegram,");
+  say("You need: the new board (with its antenna, if it has one), a USB-C data cable, your phone with Telegram,");
   say("and the other person's Wi-Fi name and password. You can stop any time and continue later.");
   const esphome = await checkComputer();
   await chooseGift();

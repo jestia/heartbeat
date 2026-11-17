@@ -31,6 +31,7 @@ notices the silence.
 | Every Monday 09:00 | ✅ Weekly check-in: online, outages in the last 7 days, Wi-Fi signal |
 | The 1st of each month | 📊 October: 2 outages, 1 h 48 min of silence in total (1 power, 1 network). |
 | Wi-Fi signal poor for 30 minutes | 📶 home has had a weak Wi-Fi signal… |
+| Chip at 80 °C or more for 30 minutes | 🌡️ home is running hot… Give it some air. |
 
 During an outage the watchdog cannot tell a power cut from an internet outage, because both
 look like silence. It tells you which one it was when the device comes back.
@@ -41,7 +42,7 @@ Send these to your bot in Telegram. It answers only in your own chat.
 
 | Command | What it does |
 |---|---|
-| `/status` | Whether the device is alive right now, how long it has run, and its Wi-Fi signal |
+| `/status` | Whether the device is alive right now, how long it has run, its Wi-Fi signal and its chip temperature |
 | `/fix` | Step-by-step help when something seems wrong: what to check, and how to give the device a new Wi-Fi password from a phone |
 | `/history` | The last ten outages with start time, length and cause, plus this month's total |
 | `/mute 2h` | Pauses alerts, for example while you work on the electrics (`30m`, `2h`, `1d`, up to 7 days) |
@@ -56,7 +57,9 @@ itself has a problem.
 ## What you need
 
 - **A Seeed XIAO ESP32-C3 board**, the version without soldered pin headers, with its stick-on
-  antenna. Other ESP32-C3 boards work with the same firmware.
+  antenna. Other ESP32-C3 boards work with the same firmware. An **ESP32-S3 Zero** (Waveshare
+  or TENSTAR) works too: set the three board lines in `firmware/heartbeat.yaml` as its comment
+  shows, or let `gift.mjs` do it.
 - **A USB-C cable that carries data** and any 5 V USB phone charger.
 - **A free Cloudflare account and a Telegram account.**
 - **A computer for the one-time setup**, with Node.js 22.12 or newer and Python 3.12, 3.13 or 3.14.
@@ -165,7 +168,7 @@ node gift.mjs
 The wizard takes you through eight steps and checks each one before moving on:
 
 1. Checks this computer and installs anything that is missing.
-2. Asks who it is for.
+2. Asks who it is for, and which board you are giving (XIAO ESP32-C3 or ESP32-S3 Zero).
 3. Asks for a new Telegram bot token (each home gets its own bot) and checks it with Telegram.
 4. Publishes a separate watchdog for them in your Cloudflare account.
 5. Connects your own phone to that bot, by scanning a code, so you can test.
@@ -190,6 +193,11 @@ The Wi-Fi details from step 7 cannot be tested from your home. If the device sta
 theirs, that is the first thing to check, and the hotspot is how to correct it.
 
 ## Tuning
+
+- **Board:** the `board`, `cpu_frequency` and `wifi_power_save` lines at the top of
+  `firmware/heartbeat.yaml`. The ESP32-S3 Zero uses 80 MHz and a dozing Wi-Fi radio, which
+  roughly halves the heat it makes in its small case; a heartbeat needs neither speed nor an
+  always-awake radio.
 
 - **How fast it alerts:** `TIMEOUT_SECONDS` in `watchdog/wrangler.jsonc` (default 120). A short
   time alerts sooner, but a router that needs 90 seconds to restart then turns every power
@@ -264,6 +272,23 @@ python case/make_case.py --name ZEYNEP
 
 The engraving is 0.6 mm deep. For letters in a second colour without a multi-colour printer,
 pause the lid print at 0.6 mm (after the third 0.2 mm layer) and change the filament.
+
+### For the ESP32-S3 Zero
+
+`case/s3-zero/personalise_case.py` changes the
+[ESP32 S3 Zero Case Snap Fit](https://makerworld.com/en/models/1776012) from MakerWorld. That
+case is someone else's design, so it is not in this repository: download its 3MF from
+MakerWorld first. The script adds two vent slots in the lid directly above the chip, four in
+the end wall opposite the USB socket, and optionally a name on the lid, raised (for a second
+filament colour) or engraved:
+
+```bash
+pip install manifold3d numpy matplotlib
+python case/s3-zero/personalise_case.py Esp32s3-closed.3mf --name ZEYNEP --style raised
+```
+
+Check the model's licence on MakerWorld before sharing a changed version. The generated files
+are ignored by git.
 
 ## How it is put together
 

@@ -250,6 +250,7 @@ function parseHeartbeat(body: string): Heartbeat {
     boot: typeof r.boot === "string" || typeof r.boot === "number" ? String(r.boot).slice(0, 64) : undefined,
     reset: typeof r.reset === "string" && r.reset ? r.reset.slice(0, 100) : undefined,
     rssi: typeof r.rssi === "number" && Number.isFinite(r.rssi) ? r.rssi : undefined,
+    temp: typeof r.temp === "number" && r.temp > -40 && r.temp < 150 ? r.temp : undefined,
   };
 }
 

@@ -220,6 +220,49 @@ describe("weak Wi-Fi warning", () => {
   });
 });
 
+describe("chip temperature", () => {
+  const beat = (s: State, t: number, temp: number) => onHeartbeat(s, "home", { boot: "a", rssi: -60, temp }, t, cfg);
+
+  it("warns after 30 minutes at 80 °C or more, then not again for a day", () => {
+    const s = newState();
+    beat(s, T0, 81);
+    const early: string[] = [];
+    for (let t = T0 + 30 * SEC; t < T0 + 30 * MIN; t += 30 * SEC) early.push(...beat(s, t, 82));
+    expect(early).toEqual([]);
+    const [msg] = beat(s, T0 + 30 * MIN, 83.4);
+    expect(msg).toBe(
+      "🌡️ home is running hot: its chip has been at 80 °C or more for 30 min (now 83 °C).\nGive it some air: keep it out of direct sun and away from heaters, and do not cover it.",
+    );
+    expect(beat(s, T0 + 20 * HOUR, 85)).toEqual([]);
+    expect(beat(s, T0 + 30 * MIN + DAY, 85)).toHaveLength(1);
+  });
+
+  it("starts counting again once the chip has cooled down", () => {
+    const s = newState();
+    beat(s, T0, 82);
+    beat(s, T0 + 20 * MIN, 70); // cooled
+    expect(beat(s, T0 + 21 * MIN, 82)).toEqual([]);
+    expect(beat(s, T0 + 45 * MIN, 82)).toEqual([]); // hot for 24 min only
+    expect(beat(s, T0 + 51 * MIN, 82)).toHaveLength(1);
+  });
+
+  it("shows the temperature in /status and mentions heat in /fix", () => {
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a", rssi: -60, temp: 47.6 }, T0 - 10 * SEC, cfg);
+    expect(handleCommand(s, "/status", T0, cfg)).toContain("Wi-Fi signal: good (-60 dBm)\nChip temperature: 48 °C, normal");
+    expect(fixText(s, T0, cfg)).not.toContain("running hot");
+    onHeartbeat(s, "home", { boot: "a", rssi: -60, temp: 84 }, T0, cfg);
+    expect(handleCommand(s, "/status", T0, cfg)).toContain("Chip temperature: 84 °C, hot");
+    expect(fixText(s, T0, cfg)).toContain("The device is running hot.");
+  });
+
+  it("leaves the temperature out for firmware that does not report it", () => {
+    const s = newState();
+    onHeartbeat(s, "home", { boot: "a", rssi: -60 }, T0, cfg);
+    expect(handleCommand(s, "/status", T0, cfg)).not.toContain("temperature");
+  });
+});
+
 describe("local time", () => {
   it("finds the next Monday 09:00 across a daylight-saving change", () => {
     const monday9 = (p: ReturnType<typeof localParts>) => p.weekday === "Mon" && p.hour === 9;

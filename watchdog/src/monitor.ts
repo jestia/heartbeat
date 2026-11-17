@@ -40,6 +40,8 @@ export interface Heartbeat {
   /** Why the device last booted, in whatever words the firmware uses. */
   reset?: string;
   rssi?: number;
+  /** The chip's own temperature in °C. */
+  temp?: number;
 }
 
 export interface Device {
@@ -57,6 +59,11 @@ export interface Device {
   weakSince?: number | null;
   /** When the weak-signal warning was last sent. */
   weakWarnedAt?: number | null;
+  /** The chip's temperature in °C from the latest heartbeat, if the firmware reports it. */
+  temp?: number | null;
+  /** Since when the chip has been continuously hot, and when that was last reported. */
+  hotSince?: number | null;
+  hotWarnedAt?: number | null;
 }
 
 export type Cause = "power" | "network" | "restart" | "unknown";
@@ -95,6 +102,11 @@ export const WEAK_DBM = -80;
 const RECOVERED_DBM = -75;
 const WEAK_FOR_MS = 30 * MINUTE;
 const WEAK_REPEAT_MS = 7 * 24 * 60 * MINUTE;
+// Same idea for heat. A chip at 80 °C still works, but that is well above what this device needs.
+export const HOT_C = 80;
+const COOLED_C = 72;
+const HOT_FOR_MS = 30 * MINUTE;
+const HOT_REPEAT_MS = 24 * 60 * MINUTE;
 
 export function isMuted(state: State, now: number): boolean {
   return state.muteUntil !== null && now < state.muteUntil;
@@ -133,6 +145,19 @@ function weakSignalWarning(d: Device, now: number): string | null {
   );
 }
 
+function heatWarning(d: Device, now: number): string | null {
+  if (d.temp == null) return null;
+  if (d.temp < COOLED_C) d.hotSince = null;
+  else if (d.temp >= HOT_C) d.hotSince ??= now;
+  if (d.hotSince == null || now - d.hotSince < HOT_FOR_MS) return null;
+  if (d.hotWarnedAt != null && now - d.hotWarnedAt < HOT_REPEAT_MS) return null;
+  d.hotWarnedAt = now;
+  return (
+    `🌡️ ${d.id} is running hot: its chip has been at ${HOT_C} °C or more for ${formatDuration(now - d.hotSince)} (now ${Math.round(d.temp)} °C).\n` +
+    "Give it some air: keep it out of direct sun and away from heaters, and do not cover it."
+  );
+}
+
 /** Apply one heartbeat. Mutates `state` and returns the messages to send. */
 export function onHeartbeat(state: State, id: string, hb: Heartbeat, now: number, cfg: Config): string[] {
   ensureSchedule(state, now, cfg);
@@ -153,6 +178,9 @@ export function onHeartbeat(state: State, id: string, hb: Heartbeat, now: number
     rssi: hb.rssi ?? null,
     weakSince: prev?.weakSince ?? null,
     weakWarnedAt: prev?.weakWarnedAt ?? null,
+    temp: hb.temp ?? null,
+    hotSince: prev?.hotSince ?? null,
+    hotWarnedAt: prev?.hotWarnedAt ?? null,
   };
   state.devices[id] = device;
 
@@ -181,6 +209,8 @@ export function onHeartbeat(state: State, id: string, hb: Heartbeat, now: number
   if (isMuted(state, now)) return [];
   const weak = weakSignalWarning(device, now);
   if (weak) messages.push(weak);
+  const hot = heatWarning(device, now);
+  if (hot) messages.push(hot);
   return messages;
 }
 

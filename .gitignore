@@ -9,3 +9,8 @@ gifts/
 
 # Case lids made for a particular person with `make_case.py --name`.
 case/pulse-case-lid-*.stl
+
+# Changed copies of the MakerWorld ESP32-S3 Zero case: someone else's design, not ours to publish.
+case/s3-zero/*.3mf
+case/s3-zero/*.stl
+case/s3-zero/*.txt

@@ -35,6 +35,12 @@ export function signalWords(rssi: number | null): string {
   return `${quality} (${rssi} dBm)`;
 }
 
+export function temperatureWords(temp: number | null | undefined): string | null {
+  if (temp == null) return null;
+  const how = temp < 65 ? "normal" : temp < 80 ? "warm" : "hot";
+  return `${Math.round(temp)} °C, ${how}`;
+}
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -90,6 +96,7 @@ export function statusText(state: State, now: number, cfg: Config): string {
       `Last heartbeat: ${formatDuration(now - d.lastSeen)} ago`,
       `Running for ${formatDuration(now - d.bootSeenAt)} without a restart`,
       `Wi-Fi signal: ${signalWords(d.rssi)}`,
+      ...(temperatureWords(d.temp) ? [`Chip temperature: ${temperatureWords(d.temp)}`] : []),
     ].join("\n");
   });
   const footer = [`Alerts after ${formatDuration(cfg.timeoutMs)} of silence.`];
@@ -138,6 +145,7 @@ export function fixText(state: State, now: number, cfg: Config): string {
   if (devices.length > 0 && down.length === 0) {
     const lines = devices.map((d) => `${deviceLine(d, now)}, last heartbeat ${formatDuration(now - d.lastSeen)} ago, Wi-Fi signal ${signalWords(d.rssi)}.`);
     const weak = devices.some((d) => d.rssi !== null && d.rssi < -75);
+    const hot = devices.some((d) => d.temp != null && d.temp >= 80);
     return [
       "Everything looks fine right now.",
       ...lines,
@@ -145,6 +153,7 @@ export function fixText(state: State, now: number, cfg: Config): string {
       `An alert only comes after ${formatDuration(cfg.timeoutMs)} of silence, so short interruptions pass without one.`,
       "If you expected a message and got none, check that this chat is not muted in Telegram.",
       ...(weak ? ["The Wi-Fi signal is on the weak side. Moving the device closer to the router helps."] : []),
+      ...(hot ? ["The device is running hot. Keep it out of direct sun and away from heaters, and do not cover it."] : []),
     ].join("\n");
   }
 
