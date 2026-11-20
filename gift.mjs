@@ -38,9 +38,7 @@ export const BOARDS = {
 const board = () => BOARDS[s.BOARD] ?? BOARDS["xiao-c3"];
 const watchdogDir = path.join(project, "watchdog");
 const TOTAL = 8;
-// What the bot calls the device in its messages, such as "home went silent". Gifts prepared before
-// this could be chosen were all called "home".
-const device = () => s.DEVICE_NAME || "home";
+const DEVICE = "home"; // what the bot calls the device in its messages
 const FAST = process.env.GRID_FAST === "1"; // shortens waits; used by the tests
 const telegramApi = process.env.TELEGRAM_API_BASE ?? "https://api.telegram.org";
 
@@ -285,7 +283,7 @@ function writeFirmware(dir, hostname, wifiName, wifiPassword) {
       `wifi_password: ${quote(wifiPassword)}`,
       `fallback_ap_password: ${quote(s.SETUP_HOTSPOT_PASSWORD)}`,
       `ota_password: ${quote(s.UPDATE_PASSWORD)}`,
-      `heartbeat_url: ${quote(`${s.WATCHDOG_ADDRESS}/hb/${device()}`)}`,
+      `heartbeat_url: ${quote(`${s.WATCHDOG_ADDRESS}/hb/${DEVICE}`)}`,
       `heartbeat_auth: ${quote(`Bearer ${s.DEVICE_TOKEN}`)}`,
       "",
     ].join("\n"),
@@ -336,7 +334,7 @@ export function diagnose(log, wifiName, hasAntennaWire = true) {
 
 // ---------------------------------------------------------------- the card
 
-function cardHtml({ name, giver, link, qrSvg, hotspotName, hotspotPassword, minutes, buttons, deviceName }) {
+function cardHtml({ name, giver, link, qrSvg, hotspotName, hotspotPassword, minutes, buttons }) {
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Home heartbeat for ${esc(name)}</title>
@@ -366,7 +364,7 @@ function cardHtml({ name, giver, link, qrSvg, hotspotName, hotspotPassword, minu
   <ol>
     <li><strong>Plug it in.</strong> Use the charger and cable in the box, in a socket where your Wi-Fi is good. ${buttons ? "It has no screen, and you never need to press its two small buttons." : "There is no light and no button; that is normal."}</li>
     <li><strong>Scan this code</strong> with your phone's camera. It opens Telegram (install the Telegram app first if you do not have it). Press <strong>Start</strong>.</li>
-    <li><strong>Done.</strong> The bot says hello. Within a few minutes of the device being plugged in it adds “✅ ${esc(deviceName)} is online”.</li>
+    <li><strong>Done.</strong> The bot says hello. Within a few minutes of the device being plugged in it adds “✅ home is online”.</li>
   </ol>
 </div>
 <p class="small">No camera? Open this link on your phone instead:<br><span class="link">${esc(link)}</span></p>
@@ -495,15 +493,7 @@ async function chooseGift() {
     const picked = await choose("Which board are you giving? Look at it: does it have a separate antenna on a thin wire?", keys.map((k) => BOARDS[k].label), null);
     remember("BOARD", keys[picked]);
   }
-  if (!s.DEVICE_NAME) {
-    // A board that already holds this gift's firmware reports as "home"; keep it that way.
-    const named = s.STAGE ? "home" : (await ask('What should the bot call the device in its messages? For example "home", or "freezer" if it watches a freezer.', {
-      fallback: "home",
-      validate: (n) => (/^[a-z0-9][a-z0-9-]{0,19}$/.test(n.toLowerCase()) ? null : "Use one word of up to 20 letters or digits (a hyphen is fine), for example freezer."),
-    })).toLowerCase();
-    remember("DEVICE_NAME", named);
-  }
-  ok(`Gift for ${s.RECIPIENT_NAME}, from ${s.GIVER_NAME}, on a ${board().short}, called "${device()}". Alert after ${s.ALERT_MINUTES} minutes. Time zone ${s.TIMEZONE}.`);
+  ok(`Gift for ${s.RECIPIENT_NAME}, from ${s.GIVER_NAME}, on a ${board().short}. Alert after ${s.ALERT_MINUTES} minutes. Time zone ${s.TIMEZONE}.`);
   note(`Everything about this gift is kept in ${path.dirname(settingsFile)}`);
 }
 
@@ -608,7 +598,7 @@ async function connectYourPhone() {
 }
 
 async function waitForHeartbeat(since) {
-  return waitFor("the board's first heartbeat (up to 4 minutes)", async () => ((await watchdog("/status")).data?.devices?.[device()]?.lastSeen ?? 0) > since, 4);
+  return waitFor("the board's first heartbeat (up to 4 minutes)", async () => ((await watchdog("/status")).data?.devices?.[DEVICE]?.lastSeen ?? 0) > since, 4);
 }
 
 async function testHere(esphome) {
@@ -661,7 +651,7 @@ async function testHere(esphome) {
   }
   remember("STAGE", "tested");
   ok("The whole chain works: board, Wi-Fi, watchdog, Telegram.");
-  note(`Your phone should show "✅ ${device()} is online. Monitoring started."`);
+  note('Your phone should show "✅ home is online. Monitoring started."');
   return port;
 }
 
@@ -688,8 +678,8 @@ async function loadTheirWifi(esphome, port) {
   const dir = path.join(path.dirname(settingsFile), "firmware");
   writeFirmware(dir, s.HOSTNAME, s.THEIR_WIFI_NAME, s.THEIR_WIFI_PASSWORD);
   await flash(esphome, dir, port ?? (await findBoard()));
-  // Forget the test run, so the first thing the bot reports from their home is "... is online".
-  await watchdog(`/devices/${device()}`, "DELETE");
+  // Forget the test run, so the first thing the bot reports from their home is "home is online".
+  await watchdog(`/devices/${DEVICE}`, "DELETE");
   remember("STAGE", "final");
   ok(`The board now holds ${s.RECIPIENT_NAME}'s Wi-Fi. It will stay quiet here, which is expected.`);
 }
@@ -700,7 +690,7 @@ async function makeCard() {
   const qrSvg = await qrcode().toString(inviteLink(), { type: "svg", margin: 1 });
   fs.writeFileSync(file, cardHtml({
     name: s.RECIPIENT_NAME, giver: s.GIVER_NAME, link: inviteLink(), qrSvg,
-    hotspotName: `${s.HOSTNAME} setup`, hotspotPassword: s.SETUP_HOTSPOT_PASSWORD, minutes: s.ALERT_MINUTES, buttons: s.BOARD === "s3-zero", deviceName: device(),
+    hotspotName: `${s.HOSTNAME} setup`, hotspotPassword: s.SETUP_HOTSPOT_PASSWORD, minutes: s.ALERT_MINUTES, buttons: s.BOARD === "s3-zero",
   }));
   ok(`Card written to ${file}`);
   if (process.platform === "darwin" && !FAST) spawnSync("open", [file]);
@@ -713,7 +703,7 @@ async function makeCard() {
   3. At their home: plug it in, they scan the code on the card and press Start.
 
   What happens then:
-  - Their phone gets a welcome from the bot, and "✅ ${device()} is online" within a few minutes.
+  - Their phone gets a welcome from the bot, and "✅ home is online" within a few minutes.
   - Your phone gets "👤 ${s.RECIPIENT_NAME} now also receives these alerts."
   - You keep receiving their alerts too. Send /leave to that bot if you would rather not.
 

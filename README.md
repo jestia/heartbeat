@@ -168,9 +168,7 @@ node gift.mjs
 The wizard takes you through eight steps and checks each one before moving on:
 
 1. Checks this computer and installs anything that is missing.
-2. Asks who it is for, which board you are giving (XIAO ESP32-C3 or ESP32-S3 Zero), and what
-   the bot should call the device: "home", or for example "freezer", so alerts read
-   "🔴 freezer went silent".
+2. Asks who it is for, and which board you are giving (XIAO ESP32-C3 or ESP32-S3 Zero).
 3. Asks for a new Telegram bot token (each home gets its own bot) and checks it with Telegram.
 4. Publishes a separate watchdog for them in your Cloudflare account.
 5. Connects your own phone to that bot, by scanning a code, so you can test.
