@@ -4,3 +4,6 @@ secrets.yaml.bak
 
 # ESPHome build output
 .esphome/
+
+# Copies of the firmware that setup.mjs makes for extra devices, one folder each.
+/*/

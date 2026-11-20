@@ -1,5 +1,6 @@
 # Your own tokens and Wi-Fi password. Never commit these.
 my-settings.txt
+my-settings-*.txt
 
 # Gifts you prepared: other people's Wi-Fi passwords and bot tokens.
 gifts/

@@ -3,9 +3,11 @@
 // secrets, checks that Telegram works, switches on the bot commands, and writes the settings the
 // board needs. Run it again after changing anything in the watchdog folder or the settings file.
 //
-//   node setup.mjs
+//   node setup.mjs            your own device
+//   node setup.mjs friend     a second, separate device: its own settings file, watchdog and firmware
 //
-// The first run creates my-settings.txt and opens it. Fill it in, save, and run the same command again.
+// The first run creates the settings file (my-settings.txt, or my-settings-friend.txt) and opens it.
+// Fill it in, save, and run the same command again.
 // Before using this, log in to Cloudflare once:  cd watchdog && npm install && npx wrangler login
 
 import { spawnSync } from "node:child_process";
@@ -13,7 +15,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const TEMPLATE = `# Fill in the value after each = sign. No quote marks needed.
 # Save this file, then run the setup command again.
@@ -27,6 +29,27 @@ TELEGRAM_CHAT_ID=
 # Your home Wi-Fi, exactly as it appears on your phone (capital letters matter).
 WIFI_NAME=
 WIFI_PASSWORD=
+`;
+
+const PROFILE_TEMPLATE = `# Settings for a second device. Fill in the value after each = sign. No quote marks needed.
+# Save this file, then run the setup command again.
+
+# The NEW bot's token from BotFather. Looks like 8123456789:AAHk3...
+# Use a new bot, not the one your own device uses.
+TELEGRAM_BOT_TOKEN=
+
+# Who gets this device's alerts. Filled in with your own number, from my-settings.txt.
+# To send them to someone else, put their number here; they can get it from @userinfobot.
+# Whoever it is must open the new bot in Telegram and press Start once.
+TELEGRAM_CHAT_ID=
+
+# The Wi-Fi the board should join, exactly as it appears on a phone (capital letters matter).
+# To test it at your place first, put your own Wi-Fi here, and theirs once it works.
+WIFI_NAME=
+WIFI_PASSWORD=
+
+# Which board: xiao-c3 for the Seeed XIAO ESP32-C3, s3-zero for the ESP32-S3 Zero.
+BOARD=xiao-c3
 `;
 
 function stop(message) {
@@ -100,12 +123,27 @@ const project = [here, path.join(os.homedir(), "Downloads", "grid-heartbeat"), p
   .find((dir) => fs.existsSync(path.join(dir, "watchdog", "wrangler.jsonc")));
 if (!project) stop("I can't find the grid-heartbeat folder. Move this file into that folder and run it again.");
 const watchdogDir = path.join(project, "watchdog");
-const settingsFile = path.join(project, "my-settings.txt");
+const mainSettingsFile = path.join(project, "my-settings.txt");
+
+// A second device gets its own settings file, watchdog and firmware folder, so the first is never touched.
+const profile = process.argv[2]?.toLowerCase();
+if (profile !== undefined && !/^[a-z0-9][a-z0-9-]{0,19}$/.test(profile)) {
+  stop(`"${process.argv[2]}" cannot be a device name. Use one word of letters or digits, for example:\n  node setup.mjs friend`);
+}
+const settingsFile = profile ? path.join(project, `my-settings-${profile}.txt`) : mainSettingsFile;
+const workerArgs = profile ? ["--name", `grid-heartbeat-${profile}`] : [];
+const hostname = profile ? `heartbeat-${profile}` : "grid-heartbeat";
+const firmwareDir = profile ? path.join(project, "firmware", profile) : path.join(project, "firmware");
 
 if (!fs.existsSync(settingsFile)) {
-  fs.writeFileSync(settingsFile, TEMPLATE);
+  let template = TEMPLATE;
+  if (profile) {
+    const own = fs.existsSync(mainSettingsFile) ? readSettings(mainSettingsFile).TELEGRAM_CHAT_ID ?? "" : "";
+    template = PROFILE_TEMPLATE.replace("TELEGRAM_CHAT_ID=\n", `TELEGRAM_CHAT_ID=${own}\n`);
+  }
+  fs.writeFileSync(settingsFile, template);
   if (process.platform === "darwin") spawnSync("open", ["-e", settingsFile]);
-  console.log(`\nI created your settings file:\n  ${settingsFile}\n\nFill in the four values, save it, then run this same command again.\n`);
+  console.log(`\nI created the settings file:\n  ${settingsFile}\n\nFill in the values, save it, then run this same command again.\n`);
   process.exit(0);
 }
 
@@ -118,6 +156,18 @@ else if (!/^-?\d+$/.test(s.TELEGRAM_CHAT_ID)) problems.push("TELEGRAM_CHAT_ID sh
 if (!s.WIFI_NAME) problems.push("WIFI_NAME is empty.");
 if (!s.WIFI_PASSWORD) problems.push("WIFI_PASSWORD is empty.");
 else if (s.WIFI_PASSWORD.length < 8) problems.push("WIFI_PASSWORD is shorter than 8 characters, which no Wi-Fi password is.");
+let boardSettings = null;
+if (profile) {
+  const { BOARDS } = await import(pathToFileURL(path.join(project, "gift.mjs")).href);
+  if (!BOARDS[s.BOARD]) problems.push(`BOARD should be ${Object.keys(BOARDS).join(" or ")}.`);
+  else boardSettings = BOARDS[s.BOARD].settings;
+  // Two devices on one bot would fight over its commands, so each needs its own.
+  for (const other of fs.readdirSync(project).filter((f) => /^my-settings(-[a-z0-9-]+)?\.txt$/.test(f) && path.join(project, f) !== settingsFile)) {
+    if (s.TELEGRAM_BOT_TOKEN && readSettings(path.join(project, other)).TELEGRAM_BOT_TOKEN === s.TELEGRAM_BOT_TOKEN) {
+      problems.push(`TELEGRAM_BOT_TOKEN is the same bot as in ${other}. Make a new bot with BotFather (send /newbot) and use its token.`);
+    }
+  }
+}
 if (problems.length) stop(`Please fix these in ${settingsFile} and run again:\n  - ${problems.join("\n  - ")}`);
 if (/[‘’“”–—]/.test(s.WIFI_NAME + s.WIFI_PASSWORD)) {
   console.log("\nNote: your Wi-Fi name or password contains a curly quote or long dash. If TextEdit changed it while you typed, paste the value instead.");
@@ -135,7 +185,7 @@ if (!fs.existsSync(path.join(watchdogDir, "node_modules"))) {
 }
 
 console.log("\nPublishing the watchdog...");
-const published = wrangler(watchdogDir, ["deploy"]);
+const published = wrangler(watchdogDir, ["deploy", ...workerArgs]);
 const found = `${published.stdout}`.match(/https:\/\/[a-z0-9.-]+\.workers\.dev/);
 if (published.status !== 0 || (!found && !s.WATCHDOG_ADDRESS)) {
   stop(`Publishing did not work:\n${published.stdout}${published.stderr}\nIf it says you are not logged in, run this first:\n  cd "${watchdogDir}" && npx wrangler login`);
@@ -154,8 +204,11 @@ const secrets = {
   TELEGRAM_CHAT_ID: s.TELEGRAM_CHAT_ID,
   TELEGRAM_WEBHOOK_SECRET: s.TELEGRAM_WEBHOOK_SECRET,
   TIMEZONE: timezone,
+  // Quoted by /fix, so whoever is at home can give the device a new Wi-Fi password from a phone.
+  SETUP_HOTSPOT_NAME: `${hostname} setup`,
+  SETUP_HOTSPOT_PASSWORD: s.SETUP_HOTSPOT_PASSWORD,
 };
-const stored = wrangler(watchdogDir, ["secret", "bulk"], JSON.stringify(secrets));
+const stored = wrangler(watchdogDir, ["secret", "bulk", ...workerArgs], JSON.stringify(secrets));
 if (stored.status !== 0) {
   stop(`Storing the secrets did not work:\n${stored.stdout}${stored.stderr}\nIf it says you are not logged in, run this first:\n  cd "${watchdogDir}" && npx wrangler login`);
 }
@@ -171,6 +224,7 @@ if (hook) stop(`The bot commands could not be switched on: ${hook}`);
 const menu = await telegram(s.TELEGRAM_BOT_TOKEN, "setMyCommands", {
   commands: [
     { command: "status", description: "Is the device alive right now" },
+    { command: "fix", description: "What to check if something seems wrong" },
     { command: "history", description: "Recent outages" },
     { command: "mute", description: "Pause alerts, for example /mute 2h" },
     { command: "unmute", description: "Turn alerts back on" },
@@ -180,9 +234,16 @@ const menu = await telegram(s.TELEGRAM_BOT_TOKEN, "setMyCommands", {
 if (menu) console.log(`  (Could not set the command menu: ${menu}. The commands still work.)`);
 
 const q = JSON.stringify;
-const firmwareSecrets = path.join(project, "firmware", "secrets.yaml");
+if (profile) {
+  // The board's own copy of the firmware, named after this device and set up for its board.
+  const { firmwareFor } = await import(pathToFileURL(path.join(project, "gift.mjs")).href);
+  fs.mkdirSync(firmwareDir, { recursive: true });
+  const base = fs.readFileSync(path.join(project, "firmware", "heartbeat.yaml"), "utf8");
+  fs.writeFileSync(path.join(firmwareDir, "heartbeat.yaml"), firmwareFor(base, hostname, boardSettings));
+}
+const firmwareSecrets = path.join(firmwareDir, "secrets.yaml");
 const yaml = [
-  "# Written by setup.mjs from my-settings.txt. To change something, edit that file and run setup again.",
+  `# Written by setup.mjs from ${path.basename(settingsFile)}. To change something, edit that file and run setup again.`,
   `wifi_ssid: ${q(s.WIFI_NAME)}`,
   `wifi_password: ${q(s.WIFI_PASSWORD)}`,
   `fallback_ap_password: ${q(s.SETUP_HOTSPOT_PASSWORD)}`,
@@ -197,8 +258,13 @@ fs.writeFileSync(firmwareSecrets, yaml);
 console.log(`
 ✓ Done.
   - A test message should now be in your Telegram.
-  - Your bot answers /status, /history, /mute, /unmute and /restarts.
+  - Your bot answers /status, /fix, /history, /mute, /unmute and /restarts.
   - The board's settings are written to ${firmwareSecrets}
-
-If the board is not flashed yet, that is the next step. If it is already running, nothing else is needed.
+${profile ? `
+To load it onto the new board, plug the board into this computer and run:
+  cd "${firmwareDir}"
+  source ~/esphome-venv/bin/activate
+  esphome run heartbeat.yaml
+` : `
+If the board is not flashed yet, that is the next step. If it is already running, nothing else is needed.`}
 `);

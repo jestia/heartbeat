@@ -156,6 +156,20 @@ Finally copy `firmware/secrets.example.yaml` to `firmware/secrets.yaml` and fill
 
 </details>
 
+## A second device with its own bot
+
+To set up another device the same way as your own, with its own bot and its own watchdog:
+
+```bash
+node setup.mjs friend
+```
+
+It creates `my-settings-friend.txt` with your chat ID already filled in. Add the new bot's
+token, the Wi-Fi and the board type (`xiao-c3` or `s3-zero`), and run the same command again.
+It publishes a watchdog called `grid-heartbeat-friend` and writes the board's firmware to
+`firmware/friend/`, then shows the commands to flash it. Your own device's settings, watchdog
+and firmware are not touched. Any one word works in place of `friend`.
+
 ## Giving one as a gift
 
 `gift.mjs` prepares a device for someone else's home. They need no computer, no Cloudflare
